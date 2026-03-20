@@ -35,16 +35,22 @@ set_log_level("INFO")
 
 gemini_client = None
 gemini_client_lock = asyncio.Lock()
+gemini_last_init_error = ""
 
 
 @asynccontextmanager
 async def lifespan(app: FastAPI):
-	"""Initialize the Gemini client during startup and close it on shutdown."""
-	await get_gemini_client()
+	"""Warm up the Gemini client during startup without crashing on transient upstream issues."""
+	try:
+		await get_gemini_client()
+	except HTTPException as e:
+		logger.warning("Gemini warm-up failed during startup: %s", e.detail)
+		if FAIL_ON_STARTUP_GEMINI_ERROR:
+			raise
 	try:
 		yield
 	finally:
-		global gemini_client
+		global gemini_client, gemini_last_init_error
 		if gemini_client is not None:
 			try:
 				await gemini_client.close()
@@ -52,6 +58,7 @@ async def lifespan(app: FastAPI):
 				logger.warning(f"Failed to close Gemini client during shutdown: {e}")
 			finally:
 				gemini_client = None
+		gemini_last_init_error = ""
 
 
 app = FastAPI(title="Gemini API FastAPI Server", lifespan=lifespan)
@@ -127,6 +134,7 @@ AUTO_DELETE_CHAT = os.environ.get("AUTO_DELETE_CHAT", "true").lower() == "true" 
 PUBLIC_BASE_URL = os.environ.get("PUBLIC_BASE_URL", "").rstrip("/")
 SECRET_FILE_PATH = os.path.join(os.path.dirname(__file__), "secrets", "proxy_secret")
 GEMINI_COOKIE_PATH = os.path.join(os.path.dirname(__file__), "secrets")
+FAIL_ON_STARTUP_GEMINI_ERROR = os.environ.get("FAIL_ON_STARTUP_GEMINI_ERROR", "false").lower() == "true"
 SESSION_VALIDATION_PROMPT = "Reply with exactly OK."
 AUTH_FAILURE_TEXT_PATTERNS = (
 	"are you signed in",
@@ -222,8 +230,15 @@ async def validate_gemini_client_session(client: GeminiClient, source: str):
 			raise ValueError("validation probe returned no persistent chat metadata")
 
 		recovered = await fetch_readable_chat_response(client, validation_cid, [1, 3, 8])
-		if not recovered or response_indicates_auth_failure(getattr(recovered, "text", "") or ""):
-			raise ValueError("validation probe chat was not readable from Gemini history")
+		if not recovered:
+			logger.warning(
+				"Gemini validation chat was generated but not readable from history using %s credentials; proceeding because content generation succeeded.",
+				source,
+			)
+			return
+
+		if response_indicates_auth_failure(getattr(recovered, "text", "") or ""):
+			raise ValueError("validation probe history returned signed-out or empty content")
 
 		logger.info("Gemini session validation succeeded using %s credentials", source)
 	finally:
@@ -351,11 +366,12 @@ if not SECURE_1PSID or not SECURE_1PSIDTS:
 	logger.warning("Gemini credentials are missing; set SECURE_1PSID and SECURE_1PSIDTS before serving requests.")
 else:
 	logger.info(
-		"Startup config: thinking=%s temporary_chat=%s auto_delete_chat=%s public_base_url=%s gemini_webapi=%s",
+		"Startup config: thinking=%s temporary_chat=%s auto_delete_chat=%s public_base_url=%s fail_on_startup_gemini_error=%s gemini_webapi=%s",
 		ENABLE_THINKING,
 		TEMPORARY_CHAT,
 		AUTO_DELETE_CHAT,
 		bool(PUBLIC_BASE_URL),
+		FAIL_ON_STARTUP_GEMINI_ERROR,
 		get_gemini_webapi_version(),
 	)
 	if not re.match("^[\\w\\-\\.]+$", SECURE_1PSID):
@@ -646,12 +662,14 @@ async def get_gemini_client():
 	Raises:
 		HTTPException: If initialization fails due to invalid parameters or connection issues.
 	"""
-	global gemini_client
+	global gemini_client, gemini_last_init_error
 	if gemini_client is not None:
+		gemini_last_init_error = ""
 		return gemini_client
 
 	async with gemini_client_lock:
 		if gemini_client is not None:
+			gemini_last_init_error = ""
 			return gemini_client
 
 		try:
@@ -690,6 +708,7 @@ async def get_gemini_client():
 					await validate_gemini_client_session(tmp_client, source)
 
 					gemini_client = tmp_client
+					gemini_last_init_error = ""
 					break
 				except Exception as e:
 					last_error = e
@@ -704,8 +723,9 @@ async def get_gemini_client():
 				raise last_error
 
 		except Exception as e:
-			logger.error(f"Failed to initialize Gemini client: {str(e)}")
-			raise HTTPException(status_code=500, detail=f"Failed to initialize Gemini client: {str(e)}")
+			gemini_last_init_error = f"Failed to initialize Gemini client: {str(e)}"
+			logger.error(gemini_last_init_error)
+			raise HTTPException(status_code=500, detail=gemini_last_init_error)
 	return gemini_client
 
 
@@ -1099,7 +1119,15 @@ async def root():
 	"""
 	Health check endpoint to verify the API server is currently running.
 	"""
-	return {"status": "online", "message": "Gemini API FastAPI Server is running"}
+	gemini_status = "ready" if gemini_client is not None else "degraded" if gemini_last_init_error else "initializing"
+	response = {
+		"status": "online",
+		"message": "Gemini API FastAPI Server is running",
+		"gemini_status": gemini_status,
+	}
+	if gemini_last_init_error:
+		response["gemini_warning"] = gemini_last_init_error
+	return response
 
 
 if __name__ == "__main__":

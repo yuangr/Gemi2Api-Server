@@ -14,6 +14,8 @@ services:
         sync: false
       - key: API_KEY
         sync: false
+      - key: FAIL_ON_STARTUP_GEMINI_ERROR
+        value: "false"
       - key: GEMINI_COOKIE_PATH
         value: /var/data/gemini_webapi
     disks:

@@ -23,6 +23,7 @@ API_KEY= "API_KEY VALUE HERE"
 TEMPORARY_CHAT = "false" # 使用临时对话模式，此模式会禁用部分功能如思考、图片生成等，默认关闭。
 AUTO_DELETE_CHAT = "true" # 生成结束后自动从web端删除对话记录，默认开启。TEMPORARY_CHAT为true时，此项无效。
 PUBLIC_BASE_URL = "https://your-domain.com" # 外部URL，用于生成图片代理链接，不填则会使用内部地址。使用反向代理时必填，否则可能导致图片无法访问。
+FAIL_ON_STARTUP_GEMINI_ERROR = "false" # 默认关闭。启动预热失败时服务仍然启动，适合 Render；设为 true 可恢复启动即失败的严格模式。
 ```
 1. `uv` 安装一下依赖
 > uv init
@@ -90,6 +91,9 @@ docker-compose up -d --build
 - `GET /v1/models`: 获取可用模型列表
 - `POST /v1/chat/completions`: 与模型聊天 (类似OpenAI接口)
 - `GET /gemini-proxy/image`: 图片代理接口（有生成图片需求时，需要保证此端点可直接访问，如果使用反向代理则需要填写`PUBLIC_BASE_URL`环境变量）
+
+> [!NOTE]
+> Render 等托管平台上，Gemini 预热请求有时可以成功返回内容，但紧接着读取历史记录会短暂失败。现在服务会在这种情况下继续启动，并在 `GET /` 返回 `gemini_status` / `gemini_warning` 方便排查；真正的请求仍会在需要时继续初始化并返回明确错误。
 
 ## 常见问题
 
