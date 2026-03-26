@@ -5,7 +5,7 @@ services:
     plan: free
     region: oregon
     dockerfilePath: ./Dockerfile
-    repo: https://github.com/zhiyu1998/Gemi2Api-Server
+    repo: https://github.com/yuangr/Gemi2Api-Server
     branch: main
     envVars:
       - key: SECURE_1PSID
@@ -14,11 +14,5 @@ services:
         sync: false
       - key: API_KEY
         sync: false
-      - key: GEMINI_COOKIE_PATH
-        value: /var/data/gemini_webapi
-    disks:
-      - name: gemini-cookie-cache
-        mountPath: /var/data/gemini_webapi
-        sizeGB: 1
     healthCheckPath: /
     autoDeploy: true
